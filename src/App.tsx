@@ -8,13 +8,17 @@ import {
 } from "./stateEngine";
 import {
   connectArcWallet,
+  estimateArcMessageFee,
   fetchArcMessages,
   getChainModeLabel,
+  getConfiguredContractModes,
+  getContractModeLabel,
   hasContractConfig,
   hasEventReaderConfig,
-  submitArcMessage
+  submitArcMessage,
+  type ArcFeeEstimate
 } from "./chain";
-import type { IntentMessage, MessageType } from "./types";
+import type { ContractMode, IntentMessage, MessageType } from "./types";
 
 const STORAGE_KEY = "deararc:v2";
 const WALLET_KEY = "deararc:wallet";
@@ -24,6 +28,23 @@ const messageTypeMeta: Record<MessageType, { label: string; note: string }> = {
   goal: { label: "Goal", note: "Action" },
   question: { label: "Question", note: "Inquiry" },
   thought: { label: "Thought", note: "Pattern" }
+};
+const contractModeMeta: Record<
+  ContractMode,
+  { label: string; eyebrow: string; description: string; detail: string }
+> = {
+  signal: {
+    label: "Signal",
+    eyebrow: "Lowest fee",
+    description: "Writes your message as an ARC event.",
+    detail: "Arcana Signal retrieves it from permanent transaction logs."
+  },
+  archive: {
+    label: "Archive",
+    eyebrow: "Contract stored",
+    description: "Stores your message in contract state and emits an ARC event.",
+    detail: "Supports direct contract reads, with a higher network fee."
+  }
 };
 
 type View = "write" | "result" | "profile";
@@ -43,8 +64,8 @@ function saveMessages(messages: IntentMessage[]) {
 
 function mergeMessages(current: IntentMessage[], incoming: IntentMessage[]) {
   const byId = new Map<string, IntentMessage>();
-  for (const message of current) byId.set(message.id, message);
-  for (const message of incoming) byId.set(message.id, message);
+  for (const message of current) byId.set(message.txHash.toLowerCase(), message);
+  for (const message of incoming) byId.set(message.txHash.toLowerCase(), message);
   return [...byId.values()].sort((a, b) => b.timestamp - a.timestamp);
 }
 
@@ -74,7 +95,12 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 export default function App() {
-  const [wallet, setWallet] = useState(() => localStorage.getItem(WALLET_KEY));
+  const [wallet, setWallet] = useState(
+    () =>
+      (import.meta.env.DEV
+        ? new URLSearchParams(window.location.search).get("wallet")
+        : null) ?? localStorage.getItem(WALLET_KEY)
+  );
   const [messages, setMessages] = useState<IntentMessage[]>(loadMessages);
   const [text, setText] = useState("");
   const [type, setType] = useState<MessageType>("wish");
@@ -85,8 +111,19 @@ export default function App() {
   const [submitError, setSubmitError] = useState("");
   const [isSyncingHistory, setIsSyncingHistory] = useState(false);
   const [syncError, setSyncError] = useState("");
+  const [isContractDialogOpen, setIsContractDialogOpen] = useState(false);
+  const [selectedContractMode, setSelectedContractMode] =
+    useState<ContractMode>("signal");
+  const [feeEstimates, setFeeEstimates] = useState<
+    Partial<Record<ContractMode, ArcFeeEstimate>>
+  >({});
+  const [feeEstimateErrors, setFeeEstimateErrors] = useState<
+    Partial<Record<ContractMode, string>>
+  >({});
+  const [isEstimatingFees, setIsEstimatingFees] = useState(false);
 
   const chainMode = getChainModeLabel();
+  const configuredContractModes = getConfiguredContractModes();
 
   useEffect(() => {
     saveMessages(messages);
@@ -156,7 +193,11 @@ export default function App() {
   }, [wallet]);
 
   const walletMessages = useMemo(
-    () => messages.filter((message) => message.sender === wallet),
+    () =>
+      messages.filter(
+        (message) =>
+          message.sender.toLowerCase() === (wallet ?? "").toLowerCase()
+      ),
     [messages, wallet]
   );
 
@@ -193,12 +234,10 @@ export default function App() {
     setView("write");
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function encodeMessage(contractMode?: ContractMode) {
     const cleanText = text.trim();
     const onchainMode = hasContractConfig();
     const sender = wallet ?? (onchainMode ? null : createDemoAddress());
-    setSubmitError("");
 
     if (!cleanText || isSubmitting) return;
 
@@ -221,7 +260,7 @@ export default function App() {
               text: cleanText,
               type,
               intensity
-            })
+            }, contractMode ?? configuredContractModes[0])
           : await createTxHash({
               sender,
               text: cleanText,
@@ -245,15 +284,87 @@ export default function App() {
       type,
       intensity,
       timestamp,
-      txHash
+      txHash,
+      contractMode
     };
 
-    setMessages((current) => [message, ...current]);
+    setMessages((current) => mergeMessages(current, [message]));
     setText("");
     setIntensity(3);
     setActiveId(message.id);
     setView("result");
+    setIsContractDialogOpen(false);
     setIsSubmitting(false);
+  }
+
+  async function openContractDialog() {
+    const cleanText = text.trim();
+    if (!wallet || !cleanText) return;
+
+    const preferredMode = configuredContractModes.includes("signal")
+      ? "signal"
+      : configuredContractModes[0];
+    if (preferredMode) setSelectedContractMode(preferredMode);
+
+    setSubmitError("");
+    setFeeEstimates({});
+    setFeeEstimateErrors({});
+    setIsContractDialogOpen(true);
+    setIsEstimatingFees(true);
+
+    const results = await Promise.all(
+      configuredContractModes.map(async (mode) => {
+        try {
+          const estimate = await estimateArcMessageFee(
+            {
+              from: wallet,
+              text: cleanText,
+              type,
+              intensity
+            },
+            mode
+          );
+          return { mode, estimate };
+        } catch (error) {
+          return {
+            mode,
+            error: getErrorMessage(error, "Fee estimate unavailable.")
+          };
+        }
+      })
+    );
+
+    const nextEstimates: Partial<Record<ContractMode, ArcFeeEstimate>> = {};
+    const nextErrors: Partial<Record<ContractMode, string>> = {};
+    for (const result of results) {
+      if ("estimate" in result) nextEstimates[result.mode] = result.estimate;
+      if ("error" in result) nextErrors[result.mode] = result.error;
+    }
+    setFeeEstimates(nextEstimates);
+    setFeeEstimateErrors(nextErrors);
+    setIsEstimatingFees(false);
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const cleanText = text.trim();
+    const onchainMode = hasContractConfig();
+    const sender = wallet ?? (onchainMode ? null : createDemoAddress());
+    setSubmitError("");
+
+    if (!cleanText || isSubmitting) return;
+
+    if (!sender || (onchainMode && !sender.startsWith("0x"))) {
+      setSubmitError("Connect an EVM wallet before encoding an onchain state.");
+      return;
+    }
+
+    if (onchainMode && configuredContractModes.length > 1) {
+      await openContractDialog();
+      return;
+    }
+
+    await encodeMessage(configuredContractModes[0]);
   }
 
   return (
@@ -356,6 +467,23 @@ export default function App() {
             setActiveId(message.id);
             setView("result");
           }}
+        />
+      )}
+
+      {isContractDialogOpen && (
+        <ContractChoiceDialog
+          modes={configuredContractModes}
+          selectedMode={selectedContractMode}
+          estimates={feeEstimates}
+          estimateErrors={feeEstimateErrors}
+          isEstimating={isEstimatingFees}
+          isSubmitting={isSubmitting}
+          submitError={submitError}
+          onSelect={setSelectedContractMode}
+          onClose={() => {
+            if (!isSubmitting) setIsContractDialogOpen(false);
+          }}
+          onConfirm={() => encodeMessage(selectedContractMode)}
         />
       )}
     </main>
@@ -481,7 +609,7 @@ function ResultPanel({
           <span />
         </div>
         <div className="tx-line">
-          <span>txHash</span>
+          <span>{getContractModeLabel(message.contractMode)} txHash</span>
           <code>{compactAddress(message.txHash, 10, 10)}</code>
         </div>
         <div className="state-grid">
@@ -602,7 +730,14 @@ function ProfilePanel({
               return (
                 <li key={message.id}>
                   <button type="button" onClick={() => onSelect(message)}>
-                    <span className="timeline-type">{formatType(message.type)}</span>
+                    <span className="timeline-labels">
+                      <span className="timeline-type">
+                        {formatType(message.type)}
+                      </span>
+                      <span className={`record-type ${message.contractMode ?? "local"}`}>
+                        {getContractModeLabel(message.contractMode)}
+                      </span>
+                    </span>
                     <strong>{message.text}</strong>
                     <small>
                       {report.vector.intent} / {report.vector.execution} /{" "}
@@ -617,6 +752,129 @@ function ProfilePanel({
         )}
       </article>
     </section>
+  );
+}
+
+function ContractChoiceDialog({
+  modes,
+  selectedMode,
+  estimates,
+  estimateErrors,
+  isEstimating,
+  isSubmitting,
+  submitError,
+  onSelect,
+  onClose,
+  onConfirm
+}: {
+  modes: ContractMode[];
+  selectedMode: ContractMode;
+  estimates: Partial<Record<ContractMode, ArcFeeEstimate>>;
+  estimateErrors: Partial<Record<ContractMode, string>>;
+  isEstimating: boolean;
+  isSubmitting: boolean;
+  submitError: string;
+  onSelect: (mode: ContractMode) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="contract-dialog surface-in"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="contract-dialog-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="dialog-heading">
+          <div>
+            <span>ARC transaction</span>
+            <h2 id="contract-dialog-title">Choose how to preserve this message</h2>
+          </div>
+          <button type="button" onClick={onClose} disabled={isSubmitting}>
+            Close
+          </button>
+        </div>
+
+        <div className="contract-options">
+          {modes.map((mode) => {
+            const meta = contractModeMeta[mode];
+            const estimate = estimates[mode];
+            const estimateError = estimateErrors[mode];
+            return (
+              <button
+                className={`contract-option ${
+                  selectedMode === mode ? "selected" : ""
+                }`}
+                type="button"
+                key={mode}
+                onClick={() => onSelect(mode)}
+                disabled={isSubmitting}
+                aria-pressed={selectedMode === mode}
+              >
+                <span className="contract-option-top">
+                  <span>
+                    <strong>{meta.label}</strong>
+                    {mode === "signal" && <em>Recommended</em>}
+                  </span>
+                  <small>{meta.eyebrow}</small>
+                </span>
+                <span className="contract-description">{meta.description}</span>
+                <span className="contract-detail">{meta.detail}</span>
+                <span className="fee-row">
+                  <span>
+                    <small>Estimated network fee</small>
+                    <strong>
+                      {isEstimating
+                        ? "Estimating..."
+                        : estimate
+                          ? formatFeeEstimate(estimate)
+                          : "Unavailable"}
+                    </strong>
+                  </span>
+                  <span>
+                    <small>Gas units</small>
+                    <strong>
+                      {estimate ? estimate.gasUnits.toLocaleString() : "-"}
+                    </strong>
+                  </span>
+                </span>
+                {estimateError && (
+                  <span className="fee-error">{estimateError}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <p className="dialog-note">
+          Both choices remain onchain and appear in your Arcana Signal history.
+          Your wallet shows the final fee before approval.
+        </p>
+        {submitError && <p className="submit-error">{submitError}</p>}
+        <div className="action-row dialog-actions">
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={onClose}
+            disabled={isSubmitting}
+          >
+            Cancel
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onConfirm}
+            disabled={isSubmitting || isEstimating || !estimates[selectedMode]}
+          >
+            {isSubmitting
+              ? "Confirming on ARC..."
+              : `Use ${contractModeMeta[selectedMode].label}`}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -635,4 +893,15 @@ function intensityLabel(value: number) {
   if (value === 3) return "Clear";
   if (value === 4) return "High";
   return "Maximum";
+}
+
+function formatFeeEstimate(estimate: ArcFeeEstimate) {
+  const value = Number(estimate.formattedFee);
+  const formatted = Number.isFinite(value)
+    ? value.toLocaleString(undefined, {
+        minimumFractionDigits: value > 0 && value < 0.001 ? 6 : 4,
+        maximumFractionDigits: 6
+      })
+    : estimate.formattedFee;
+  return `${formatted} ${estimate.symbol}`;
 }

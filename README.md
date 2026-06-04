@@ -22,17 +22,24 @@ npm run dev
 
 ## Modes
 
-The app supports three modes:
+The app supports four modes:
 
 - Local deterministic mode: no contract config, creates local tx-like hashes.
 - Write-only chain mode: contract address is set, wallet can submit messages.
 - Onchain event mode: contract address, ARC RPC URL, chain id, and deploy block
   are set, so wallet profiles are rebuilt from contract events.
+- Dual-contract event mode: Signal and Archive contracts are set. Users choose
+  the lower-fee event record or the contract-stored Archive record before
+  approving a transaction. History is merged from both contracts.
 
 Copy `.env.example` to `.env` and fill the ARC values:
 
 ```bash
 VITE_DEARARC_CONTRACT_ADDRESS=
+VITE_DEARARC_SIGNAL_CONTRACT_ADDRESS=
+VITE_DEARARC_SIGNAL_DEPLOY_BLOCK=0
+VITE_DEARARC_ARCHIVE_CONTRACT_ADDRESS=
+VITE_DEARARC_ARCHIVE_DEPLOY_BLOCK=0
 VITE_ARC_CHAIN_ID=
 VITE_ARC_RPC_URL=
 VITE_ARC_CHAIN_NAME=ARC Testnet

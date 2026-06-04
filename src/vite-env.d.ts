@@ -2,6 +2,10 @@
 
 interface ImportMetaEnv {
   readonly VITE_DEARARC_CONTRACT_ADDRESS?: string;
+  readonly VITE_DEARARC_SIGNAL_CONTRACT_ADDRESS?: string;
+  readonly VITE_DEARARC_SIGNAL_DEPLOY_BLOCK?: string;
+  readonly VITE_DEARARC_ARCHIVE_CONTRACT_ADDRESS?: string;
+  readonly VITE_DEARARC_ARCHIVE_DEPLOY_BLOCK?: string;
   readonly VITE_ARC_CHAIN_ID?: string;
   readonly VITE_ARC_RPC_URL?: string;
   readonly VITE_ARC_CHAIN_NAME?: string;

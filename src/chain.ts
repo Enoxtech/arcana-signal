@@ -1,12 +1,13 @@
 import {
   createPublicClient,
   encodeFunctionData,
+  formatUnits,
   http,
   isAddress,
   parseAbiItem,
   type Chain
 } from "viem";
-import type { IntentMessage, MessageType } from "./types";
+import type { ContractMode, IntentMessage, MessageType } from "./types";
 
 const messageTypeIndex: Record<MessageType, number> = {
   wish: 0,
@@ -35,9 +36,30 @@ const messageCreatedEvent = parseAbiItem(
   "event MessageCreated(address indexed sender, string text, uint8 messageType, uint8 intensity, uint256 timestamp)"
 );
 
-const contractAddress = import.meta.env.VITE_DEARARC_CONTRACT_ADDRESS as
-  | `0x${string}`
-  | undefined;
+const signalContractAddress = (
+  import.meta.env.VITE_DEARARC_SIGNAL_CONTRACT_ADDRESS ||
+  import.meta.env.VITE_DEARARC_CONTRACT_ADDRESS
+) as `0x${string}` | undefined;
+const archiveContractAddress = import.meta.env
+  .VITE_DEARARC_ARCHIVE_CONTRACT_ADDRESS as `0x${string}` | undefined;
+const signalDeployBlock =
+  import.meta.env.VITE_DEARARC_SIGNAL_DEPLOY_BLOCK ||
+  import.meta.env.VITE_DEARARC_DEPLOY_BLOCK;
+const archiveDeployBlock = import.meta.env.VITE_DEARARC_ARCHIVE_DEPLOY_BLOCK;
+
+const contractConfig: Record<
+  ContractMode,
+  { address?: `0x${string}`; deployBlock?: string }
+> = {
+  signal: {
+    address: signalContractAddress,
+    deployBlock: signalDeployBlock
+  },
+  archive: {
+    address: archiveContractAddress,
+    deployBlock: archiveDeployBlock
+  }
+};
 
 const arcChainId = import.meta.env.VITE_ARC_CHAIN_ID as string | undefined;
 const arcRpcUrl = import.meta.env.VITE_ARC_RPC_URL as string | undefined;
@@ -48,9 +70,13 @@ const arcCurrencySymbol =
 const arcExplorerUrl = import.meta.env.VITE_ARC_BLOCK_EXPLORER_URL as
   | string
   | undefined;
-const deployBlock = import.meta.env.VITE_DEARARC_DEPLOY_BLOCK as
-  | string
-  | undefined;
+
+export interface ArcFeeEstimate {
+  gasUnits: bigint;
+  feeWei: bigint;
+  formattedFee: string;
+  symbol: string;
+}
 
 declare global {
   interface Window {
@@ -65,8 +91,23 @@ declare global {
   }
 }
 
+function isConfiguredMode(mode: ContractMode) {
+  const address = contractConfig[mode].address;
+  return Boolean(address && isAddress(address));
+}
+
+export function getConfiguredContractModes(): ContractMode[] {
+  return (["signal", "archive"] as const).filter(isConfiguredMode);
+}
+
+export function getContractModeLabel(mode?: ContractMode) {
+  if (mode === "archive") return "Archive record";
+  if (mode === "signal") return "Signal record";
+  return "Local record";
+}
+
 export function hasContractConfig() {
-  return Boolean(contractAddress && isAddress(contractAddress));
+  return getConfiguredContractModes().length > 0;
 }
 
 export function hasEventReaderConfig() {
@@ -74,6 +115,9 @@ export function hasEventReaderConfig() {
 }
 
 export function getChainModeLabel() {
+  if (hasEventReaderConfig() && getConfiguredContractModes().length > 1) {
+    return "Dual-contract event mode";
+  }
   if (hasEventReaderConfig()) return "Onchain event mode";
   if (hasContractConfig()) return "Write-only chain mode";
   return "Local deterministic mode";
@@ -187,31 +231,79 @@ function getPublicClient() {
   });
 }
 
-export async function submitArcMessage(input: {
-  from: string;
+function getContract(mode: ContractMode) {
+  const config = contractConfig[mode];
+  if (!config.address || !isAddress(config.address)) {
+    throw new Error(`${getContractModeLabel(mode)} contract is not configured.`);
+  }
+  return config;
+}
+
+function getMessageData(input: {
   text: string;
   type: MessageType;
   intensity: number;
 }) {
-  if (!window.ethereum || !contractAddress || !isAddress(contractAddress)) {
-    throw new Error("ARC contract is not configured.");
-  }
-
-  await ensureArcChain();
-
-  const data = encodeFunctionData({
+  return encodeFunctionData({
     abi: dearArcAbi,
     functionName: "createMessage",
     args: [input.text, messageTypeIndex[input.type], input.intensity]
   });
+}
+
+export async function estimateArcMessageFee(
+  input: {
+    from: string;
+    text: string;
+    type: MessageType;
+    intensity: number;
+  },
+  mode: ContractMode
+): Promise<ArcFeeEstimate> {
+  const { address } = getContract(mode);
+  const client = getPublicClient();
+  const data = getMessageData(input);
+  const [gasUnits, gasPrice] = await Promise.all([
+    client.estimateGas({
+      account: input.from as `0x${string}`,
+      to: address,
+      data
+    }),
+    client.getGasPrice()
+  ]);
+  const feeWei = gasUnits * gasPrice;
+
+  return {
+    gasUnits,
+    feeWei,
+    formattedFee: formatUnits(feeWei, 18),
+    symbol: arcCurrencySymbol
+  };
+}
+
+export async function submitArcMessage(
+  input: {
+    from: string;
+    text: string;
+    type: MessageType;
+    intensity: number;
+  },
+  mode: ContractMode
+) {
+  if (!window.ethereum) {
+    throw new Error("No browser wallet detected.");
+  }
+
+  const { address } = getContract(mode);
+  await ensureArcChain();
 
   const hash = (await window.ethereum.request({
     method: "eth_sendTransaction",
     params: [
       {
         from: input.from,
-        to: contractAddress,
-        data
+        to: address,
+        data: getMessageData(input)
       }
     ]
   })) as `0x${string}`;
@@ -229,24 +321,31 @@ export async function submitArcMessage(input: {
   return hash;
 }
 
-export async function fetchArcMessages(sender?: string): Promise<IntentMessage[]> {
-  if (!contractAddress || !isAddress(contractAddress) || !arcRpcUrl || !arcChainId) {
-    return [];
-  }
+async function fetchContractMessages(
+  mode: ContractMode,
+  sender?: string
+): Promise<IntentMessage[]> {
+  const config = contractConfig[mode];
+  if (!config.address || !isAddress(config.address)) return [];
 
   const client = getPublicClient();
-
   const latestBlock = await client.getBlockNumber();
   const fallbackStart = latestBlock > 9_999n ? latestBlock - 9_999n : 0n;
-  const firstBlock = deployBlock ? BigInt(deployBlock) : fallbackStart;
+  const firstBlock = config.deployBlock
+    ? BigInt(config.deployBlock)
+    : fallbackStart;
   const logs = [];
 
-  for (let fromBlock = firstBlock; fromBlock <= latestBlock; fromBlock += 10_000n) {
+  for (
+    let fromBlock = firstBlock;
+    fromBlock <= latestBlock;
+    fromBlock += 10_000n
+  ) {
     const toBlock =
       fromBlock + 9_999n > latestBlock ? latestBlock : fromBlock + 9_999n;
 
     const chunk = await client.getLogs({
-      address: contractAddress,
+      address: config.address,
       event: messageCreatedEvent,
       args: sender && isAddress(sender) ? { sender } : undefined,
       fromBlock,
@@ -256,20 +355,44 @@ export async function fetchArcMessages(sender?: string): Promise<IntentMessage[]
     logs.push(...chunk);
   }
 
-  return logs
-    .map((log) => {
-      const typeIndex = Number(log.args.messageType ?? 0);
-      const timestamp = Number(log.args.timestamp ?? 0n);
+  return logs.map((log) => {
+    const typeIndex = Number(log.args.messageType ?? 0);
+    const timestamp = Number(log.args.timestamp ?? 0n);
 
-      return {
-        id: `${log.transactionHash}-${log.logIndex}`,
-        sender: log.args.sender ?? "",
-        text: log.args.text ?? "",
-        type: messageTypeFromIndex[typeIndex] ?? "thought",
-        intensity: Number(log.args.intensity ?? 3),
-        timestamp: timestamp > 0 ? timestamp * 1000 : Date.now(),
-        txHash: log.transactionHash
-      } satisfies IntentMessage;
-    })
-    .sort((a, b) => b.timestamp - a.timestamp);
+    return {
+      id: `${mode}-${log.transactionHash}-${log.logIndex}`,
+      sender: log.args.sender ?? "",
+      text: log.args.text ?? "",
+      type: messageTypeFromIndex[typeIndex] ?? "thought",
+      intensity: Number(log.args.intensity ?? 3),
+      timestamp: timestamp > 0 ? timestamp * 1000 : Date.now(),
+      txHash: log.transactionHash,
+      contractMode: mode
+    } satisfies IntentMessage;
+  });
+}
+
+export async function fetchArcMessages(sender?: string): Promise<IntentMessage[]> {
+  if (!hasEventReaderConfig()) return [];
+
+  const results = await Promise.allSettled(
+    getConfiguredContractModes().map((mode) =>
+      fetchContractMessages(mode, sender)
+    )
+  );
+  const messages = results
+    .filter(
+      (result): result is PromiseFulfilledResult<IntentMessage[]> =>
+        result.status === "fulfilled"
+    )
+    .flatMap((result) => result.value);
+
+  if (results.every((result) => result.status === "rejected")) {
+    const rejected = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected"
+    );
+    throw rejected?.reason;
+  }
+
+  return messages.sort((a, b) => b.timestamp - a.timestamp);
 }

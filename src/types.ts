@@ -1,4 +1,5 @@
 export type MessageType = "wish" | "goal" | "question" | "thought";
+export type ContractMode = "signal" | "archive";
 
 export type StateLevel = "Unclear" | "Focused" | "Precise";
 export type ExecutionLevel = "Passive" | "Moderate pressure" | "Urgent";
@@ -12,6 +13,7 @@ export interface IntentMessage {
   intensity: number;
   timestamp: number;
   txHash: string;
+  contractMode?: ContractMode;
 }
 
 export interface StateVector {

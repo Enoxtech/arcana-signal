@@ -371,7 +371,8 @@ h1 {
 .trend-card,
 .profile-card,
 .timeline-card,
-.empty-state {
+.empty-state,
+.contract-dialog {
   border: 1px solid rgba(174, 116, 255, 0.28);
   border-radius: 34px;
   background:
@@ -768,6 +769,38 @@ code {
   text-transform: uppercase;
 }
 
+.timeline-labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.record-type {
+  width: fit-content;
+  padding: 5px 10px;
+  border: 1px solid rgba(183, 140, 255, 0.2);
+  border-radius: 999px;
+  color: #d8c4f5;
+  background: rgba(183, 140, 255, 0.08);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+}
+
+.record-type.archive {
+  color: var(--amber);
+  border-color: rgba(255, 204, 122, 0.22);
+  background: rgba(255, 204, 122, 0.08);
+}
+
+.record-type.signal {
+  color: var(--mint);
+  border-color: rgba(96, 242, 171, 0.2);
+  background: rgba(96, 242, 171, 0.08);
+}
+
 .timeline strong {
   color: #ffffff;
   font-size: 18px;
@@ -783,6 +816,215 @@ code {
   width: min(720px, 100%);
   margin: 0 auto;
   text-align: center;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  overflow-y: auto;
+  background: rgba(5, 0, 10, 0.78);
+  backdrop-filter: blur(18px);
+}
+
+.contract-dialog {
+  position: relative;
+  width: min(840px, 100%);
+  max-height: calc(100vh - 40px);
+  padding: clamp(22px, 4vw, 34px);
+  overflow-y: auto;
+  border-radius: 28px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 40px 120px rgba(0, 0, 0, 0.66),
+    0 0 80px rgba(123, 92, 255, 0.16);
+}
+
+.dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.dialog-heading div > span {
+  color: var(--mint);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.dialog-heading h2 {
+  max-width: 580px;
+  margin: 8px 0 0;
+  color: #ffffff;
+  font-size: clamp(22px, 4vw, 31px);
+  line-height: 1.16;
+}
+
+.dialog-heading > button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(183, 140, 255, 0.25);
+  border-radius: 999px;
+  color: #d8c4f5;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.contract-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.contract-option {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 11px;
+  padding: 20px;
+  border: 1px solid rgba(183, 140, 255, 0.22);
+  border-radius: 20px;
+  color: inherit;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.contract-option:hover {
+  transform: translateY(-2px);
+  border-color: rgba(183, 140, 255, 0.46);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.contract-option.selected {
+  border-color: rgba(96, 242, 171, 0.5);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(96, 242, 171, 0.1), transparent 45%),
+    rgba(96, 242, 171, 0.055);
+  box-shadow:
+    inset 0 0 32px rgba(96, 242, 171, 0.04),
+    0 0 30px rgba(96, 242, 171, 0.08);
+}
+
+.contract-option-top,
+.contract-option-top > span,
+.fee-row,
+.fee-row > span {
+  display: flex;
+}
+
+.contract-option-top {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.contract-option-top > span {
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.contract-option-top strong {
+  color: #ffffff;
+  font-size: 23px;
+}
+
+.contract-option-top em {
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: #071b12;
+  background: var(--mint);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 950;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.contract-option-top small {
+  color: var(--mint);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 1.4px;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.contract-option:nth-child(2) .contract-option-top small {
+  color: var(--amber);
+}
+
+.contract-description {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.contract-detail {
+  min-height: 42px;
+  color: #bba7d7;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.fee-row {
+  align-items: stretch;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+.fee-row > span {
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.fee-row small {
+  color: #9c86b9;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.fee-row strong {
+  overflow-wrap: anywhere;
+  color: #ffffff;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.fee-error {
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dialog-note {
+  margin: 18px 0 0;
+  color: #ab96c8;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dialog-actions {
+  margin-top: 20px;
 }
 
 @media (max-width: 820px) {
@@ -807,6 +1049,10 @@ code {
 
   .type-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .contract-options {
+    grid-template-columns: 1fr;
   }
 
   .brand-lockup {
@@ -883,7 +1129,8 @@ code {
   .trend-card,
   .profile-card,
   .timeline-card,
-  .empty-state {
+  .empty-state,
+  .contract-dialog {
     max-width: calc(100vw - 32px);
     border-radius: 26px;
   }
@@ -928,6 +1175,36 @@ code {
 
   .type-bar {
     grid-template-columns: 78px minmax(0, 1fr) 38px;
+  }
+
+  .dialog-backdrop {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .contract-dialog {
+    width: 100%;
+    max-width: none;
+    max-height: calc(100vh - 20px);
+    border-radius: 22px;
+  }
+
+  .dialog-heading {
+    flex-direction: column;
+  }
+
+  .dialog-heading > button {
+    position: absolute;
+    top: 18px;
+    right: 18px;
+  }
+
+  .dialog-heading h2 {
+    padding-right: 58px;
+  }
+
+  .contract-detail {
+    min-height: 0;
   }
 }
 
