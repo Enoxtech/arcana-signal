@@ -15,6 +15,7 @@ import {
   getContractModeLabel,
   hasContractConfig,
   hasEventReaderConfig,
+  normalizeWalletAddress,
   submitArcMessage,
   type ArcFeeEstimate
 } from "./chain";
@@ -64,9 +65,17 @@ function saveMessages(messages: IntentMessage[]) {
 
 function mergeMessages(current: IntentMessage[], incoming: IntentMessage[]) {
   const byId = new Map<string, IntentMessage>();
-  for (const message of current) byId.set(message.txHash.toLowerCase(), message);
-  for (const message of incoming) byId.set(message.txHash.toLowerCase(), message);
+  for (const message of current) byId.set(messageKey(message), message);
+  for (const message of incoming) byId.set(messageKey(message), message);
   return [...byId.values()].sort((a, b) => b.timestamp - a.timestamp);
+}
+
+function normalizedText(value: unknown) {
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+function messageKey(message: IntentMessage) {
+  return normalizedText(message.txHash) || message.id;
 }
 
 function createDemoAddress() {
@@ -82,16 +91,27 @@ function createDemoAddress() {
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error) return error.message;
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" &&
+          error &&
+          "message" in error &&
+          typeof error.message === "string"
+        ? error.message
+        : fallback;
+
   if (
-    typeof error === "object" &&
-    error &&
-    "message" in error &&
-    typeof error.message === "string"
+    /user rejected|user denied|request rejected|cancelled|canceled/i.test(
+      message
+    )
   ) {
-    return error.message;
+    return "The wallet request was cancelled.";
   }
-  return fallback;
+  if (/toLowerCase is not a function/i.test(message)) {
+    return "The wallet returned an unsupported response. Refresh the wallet browser and try again.";
+  }
+  return message;
 }
 
 export default function App() {
@@ -139,8 +159,7 @@ export default function App() {
     if (!window.ethereum?.on) return;
 
     const handleAccountsChanged = (...args: unknown[]) => {
-      const accounts = args[0] as string[] | undefined;
-      const nextWallet = accounts?.[0] ?? null;
+      const nextWallet = normalizeWalletAddress(args[0]);
       setWallet(nextWallet);
 
       if (!nextWallet) {
@@ -193,11 +212,13 @@ export default function App() {
   }, [wallet]);
 
   const walletMessages = useMemo(
-    () =>
-      messages.filter(
-        (message) =>
-          message.sender.toLowerCase() === (wallet ?? "").toLowerCase()
-      ),
+    () => {
+      if (!wallet) return [];
+      const normalizedWallet = normalizedText(wallet);
+      return messages.filter(
+        (message) => normalizedText(message.sender) === normalizedWallet
+      );
+    },
     [messages, wallet]
   );
 

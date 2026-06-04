@@ -78,6 +78,8 @@ export interface ArcFeeEstimate {
   symbol: string;
 }
 
+type ProviderRecord = Record<string, unknown>;
+
 declare global {
   interface Window {
     ethereum?: {
@@ -89,6 +91,145 @@ declare global {
       ) => void;
     };
   }
+}
+
+function asProviderRecord(value: unknown): ProviderRecord | null {
+  return typeof value === "object" && value !== null
+    ? (value as ProviderRecord)
+    : null;
+}
+
+function nestedProviderValues(value: unknown, keys: string[]) {
+  const record = asProviderRecord(value);
+  if (!record) return [];
+  return keys.map((key) => record[key]).filter((item) => item !== undefined);
+}
+
+export function normalizeWalletAddress(
+  value: unknown,
+  depth = 0
+): string | null {
+  if (depth > 3) return null;
+
+  if (typeof value === "string") {
+    const address = value.trim();
+    return isAddress(address) ? address : null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const address = normalizeWalletAddress(item, depth + 1);
+      if (address) return address;
+    }
+    return null;
+  }
+
+  for (const item of nestedProviderValues(value, [
+    "address",
+    "account",
+    "selectedAddress",
+    "accounts",
+    "result",
+    "value"
+  ])) {
+    const address = normalizeWalletAddress(item, depth + 1);
+    if (address) return address;
+  }
+
+  return null;
+}
+
+export function normalizeProviderChainId(
+  value: unknown,
+  depth = 0
+): string | null {
+  if (depth > 3) return null;
+
+  try {
+    if (typeof value === "bigint") {
+      return value >= 0n ? `0x${value.toString(16)}` : null;
+    }
+
+    if (typeof value === "number") {
+      return Number.isSafeInteger(value) && value >= 0
+        ? `0x${value.toString(16)}`
+        : null;
+    }
+
+    if (typeof value === "string") {
+      const chainId = value.trim();
+      if (/^0x[0-9a-f]+$/i.test(chainId)) {
+        return `0x${BigInt(chainId).toString(16)}`;
+      }
+      if (/^\d+$/.test(chainId)) {
+        return `0x${BigInt(chainId).toString(16)}`;
+      }
+      const caipChainId = /^eip155:(\d+)$/i.exec(chainId)?.[1];
+      if (caipChainId) {
+        return `0x${BigInt(caipChainId).toString(16)}`;
+      }
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  for (const item of nestedProviderValues(value, [
+    "chainId",
+    "chainID",
+    "id",
+    "result",
+    "value"
+  ])) {
+    const chainId = normalizeProviderChainId(item, depth + 1);
+    if (chainId) return chainId;
+  }
+
+  return null;
+}
+
+export function normalizeTransactionHash(
+  value: unknown,
+  depth = 0
+): `0x${string}` | null {
+  if (depth > 3) return null;
+
+  if (typeof value === "string") {
+    const hash = value.trim();
+    return /^0x[0-9a-f]{64}$/i.test(hash) ? (hash as `0x${string}`) : null;
+  }
+
+  for (const item of nestedProviderValues(value, [
+    "hash",
+    "txHash",
+    "transactionHash",
+    "result",
+    "value"
+  ])) {
+    const hash = normalizeTransactionHash(item, depth + 1);
+    if (hash) return hash;
+  }
+
+  return null;
+}
+
+function providerErrorCode(error: unknown, depth = 0): number {
+  if (depth > 3) return 0;
+  const record = asProviderRecord(error);
+  if (!record) return 0;
+
+  for (const item of nestedProviderValues(error, [
+    "data",
+    "error",
+    "originalError",
+    "cause"
+  ])) {
+    const nestedCode = providerErrorCode(item, depth + 1);
+    if (nestedCode) return nestedCode;
+  }
+
+  const code = Number(record.code);
+  return Number.isFinite(code) && code !== 0 ? code : 0;
 }
 
 function isConfiguredMode(mode: ContractMode) {
@@ -124,13 +265,14 @@ export function getChainModeLabel() {
 }
 
 function parseChainId(value: string) {
-  return value.startsWith("0x") ? Number.parseInt(value, 16) : Number(value);
+  const normalized = normalizeProviderChainId(value);
+  return normalized ? Number.parseInt(normalized.slice(2), 16) : 0;
 }
 
 function chainIdHex(value: string) {
-  return value.startsWith("0x")
-    ? value
-    : `0x${parseChainId(value).toString(16)}`;
+  return (
+    normalizeProviderChainId(value) ?? `0x${parseChainId(value).toString(16)}`
+  );
 }
 
 function getArcChain(): Chain {
@@ -163,11 +305,15 @@ export async function ensureArcChain() {
   if (!window.ethereum || !arcChainId) return;
 
   const expectedChainId = chainIdHex(arcChainId);
-  const currentChain = (await window.ethereum.request({
+  const currentChain = normalizeProviderChainId(await window.ethereum.request({
     method: "eth_chainId"
-  })) as string;
+  }));
 
-  if (currentChain.toLowerCase() === expectedChainId.toLowerCase()) return;
+  if (!currentChain) {
+    throw new Error("The wallet did not return a valid network ID.");
+  }
+
+  if (currentChain === expectedChainId) return;
 
   try {
     await window.ethereum.request({
@@ -175,10 +321,7 @@ export async function ensureArcChain() {
       params: [{ chainId: expectedChainId }]
     });
   } catch (error) {
-    const code =
-      typeof error === "object" && error && "code" in error
-        ? Number((error as { code: unknown }).code)
-        : 0;
+    const code = providerErrorCode(error);
 
     if (code !== 4902 || !arcRpcUrl) throw error;
 
@@ -208,16 +351,16 @@ export async function connectArcWallet() {
     );
   }
 
-  const accounts = (await window.ethereum.request({
+  const account = normalizeWalletAddress(await window.ethereum.request({
     method: "eth_requestAccounts"
-  })) as string[];
+  }));
 
-  if (!accounts?.[0] || !isAddress(accounts[0])) {
+  if (!account) {
     throw new Error("No wallet account was returned.");
   }
 
   await ensureArcChain();
-  return accounts[0];
+  return account;
 }
 
 function getPublicClient() {
@@ -297,7 +440,7 @@ export async function submitArcMessage(
   const { address } = getContract(mode);
   await ensureArcChain();
 
-  const hash = (await window.ethereum.request({
+  const hash = normalizeTransactionHash(await window.ethereum.request({
     method: "eth_sendTransaction",
     params: [
       {
@@ -306,7 +449,11 @@ export async function submitArcMessage(
         data: getMessageData(input)
       }
     ]
-  })) as `0x${string}`;
+  }));
+
+  if (!hash) {
+    throw new Error("The wallet did not return a valid transaction hash.");
+  }
 
   const receipt = await getPublicClient().waitForTransactionReceipt({
     hash,

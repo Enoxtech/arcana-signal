@@ -1032,6 +1032,59 @@ code {
     padding: 40px 20px 36px;
   }
 
+  .cosmos {
+    position: absolute;
+    animation: none;
+    background-image:
+      radial-gradient(circle, rgba(255, 255, 255, 0.66) 0 1px, transparent 1.4px),
+      radial-gradient(circle, rgba(96, 242, 171, 0.38) 0 1px, transparent 1.3px);
+    background-size:
+      150px 190px,
+      280px 310px;
+  }
+
+  .cosmos::before,
+  .cosmos::after,
+  .aurora {
+    display: none;
+  }
+
+  .wallet-button,
+  .nav-tabs,
+  .address-pill,
+  .ghost-button,
+  .primary-button,
+  .message-panel,
+  .state-card,
+  .reflection-card,
+  .trend-card,
+  .profile-card,
+  .timeline-card,
+  .empty-state,
+  .contract-dialog,
+  .dialog-backdrop {
+    backdrop-filter: none;
+  }
+
+  .message-panel,
+  .state-card,
+  .reflection-card,
+  .trend-card,
+  .profile-card,
+  .timeline-card,
+  .empty-state,
+  .contract-dialog {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.04),
+      0 16px 40px rgba(0, 0, 0, 0.24);
+  }
+
+  h1 {
+    text-shadow:
+      0 0 14px rgba(255, 255, 255, 0.42),
+      0 0 34px rgba(101, 36, 175, 0.54);
+  }
+
   .hero {
     margin-top: 54px;
   }
@@ -1180,6 +1233,7 @@ code {
   .dialog-backdrop {
     align-items: end;
     padding: 10px;
+    background: rgba(5, 0, 10, 0.92);
   }
 
   .contract-dialog {
