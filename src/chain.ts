@@ -5,6 +5,7 @@ import {
   http,
   isAddress,
   parseAbiItem,
+  toHex,
   type Chain
 } from "viem";
 import type { ContractMode, IntentMessage, MessageType } from "./types";
@@ -75,10 +76,20 @@ export interface ArcFeeEstimate {
   gasUnits: bigint;
   feeWei: bigint;
   formattedFee: string;
+  balanceWei: bigint;
+  formattedBalance: string;
+  hasSufficientBalance: boolean;
   symbol: string;
 }
 
+export interface ArcWalletConnection {
+  account: string;
+  chainReady: boolean;
+  warning?: string;
+}
+
 type ProviderRecord = Record<string, unknown>;
+export const ARC_FAUCET_URL = "https://faucet.circle.com/";
 
 declare global {
   interface Window {
@@ -232,6 +243,59 @@ function providerErrorCode(error: unknown, depth = 0): number {
   return Number.isFinite(code) && code !== 0 ? code : 0;
 }
 
+export function getProviderErrorMessage(
+  error: unknown,
+  depth = 0
+): string | null {
+  if (depth > 4) return null;
+
+  if (typeof error === "string" && error.trim()) return error.trim();
+
+  const record = asProviderRecord(error);
+  if (!record) {
+    return error instanceof Error && error.message ? error.message : null;
+  }
+
+  for (const item of nestedProviderValues(error, [
+    "data",
+    "error",
+    "originalError",
+    "cause",
+    "result"
+  ])) {
+    const message = getProviderErrorMessage(item, depth + 1);
+    if (message && !/internal json-rpc error/i.test(message)) return message;
+  }
+
+  if (error instanceof Error && error.message) return error.message;
+
+  for (const key of ["message", "shortMessage", "details", "reason"]) {
+    const message = record[key];
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
+
+  return null;
+}
+
+function friendlyProviderMessage(error: unknown, fallback: string) {
+  const message = getProviderErrorMessage(error) ?? fallback;
+
+  if (/no assets found/i.test(message)) {
+    return "Trust Wallet could not find the ARC Testnet USDC gas asset. Fund this address with ARC Testnet USDC, then retry. If the balance is already funded, use an ARC-compatible wallet such as MetaMask, Rabby, Coinbase Wallet, or Rainbow.";
+  }
+  if (
+    /user rejected|user denied|user refused|request rejected|cancelled|canceled/i.test(
+      message
+    )
+  ) {
+    return "The wallet request was cancelled.";
+  }
+  if (/insufficient funds|insufficient balance/i.test(message)) {
+    return "This wallet does not have enough ARC Testnet USDC to pay the network fee.";
+  }
+  return message;
+}
+
 function isConfiguredMode(mode: ContractMode) {
   const address = contractConfig[mode].address;
   return Boolean(address && isAddress(address));
@@ -301,6 +365,20 @@ function getArcChain(): Chain {
   };
 }
 
+async function waitForArcChain(expectedChainId: string) {
+  if (!window.ethereum) return false;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const activeChainId = normalizeProviderChainId(
+      await window.ethereum.request({ method: "eth_chainId" })
+    );
+    if (activeChainId === expectedChainId) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  return false;
+}
+
 export async function ensureArcChain() {
   if (!window.ethereum || !arcChainId) return;
 
@@ -341,10 +419,41 @@ export async function ensureArcChain() {
         }
       ]
     });
+
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: expectedChainId }]
+    });
+  }
+
+  if (!(await waitForArcChain(expectedChainId))) {
+    throw new Error("Select ARC Testnet in your wallet to continue.");
   }
 }
 
-export async function connectArcWallet() {
+export async function isArcChainActive() {
+  if (!window.ethereum || !arcChainId) return false;
+  try {
+    return (
+      normalizeProviderChainId(await window.ethereum.request({
+        method: "eth_chainId"
+      })) === chainIdHex(arcChainId)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function getConnectedArcWallet(): Promise<ArcWalletConnection | null> {
+  if (!window.ethereum) return null;
+  const account = normalizeWalletAddress(await window.ethereum.request({
+    method: "eth_accounts"
+  }));
+  if (!account) return null;
+  return { account, chainReady: await isArcChainActive() };
+}
+
+export async function connectArcWallet(): Promise<ArcWalletConnection> {
   if (!window.ethereum) {
     throw new Error(
       "No browser wallet detected. Open the app in MetaMask, Rabby, or another EVM wallet browser."
@@ -359,8 +468,19 @@ export async function connectArcWallet() {
     throw new Error("No wallet account was returned.");
   }
 
-  await ensureArcChain();
-  return account;
+  try {
+    await ensureArcChain();
+    return { account, chainReady: true };
+  } catch (error) {
+    return {
+      account,
+      chainReady: false,
+      warning: friendlyProviderMessage(
+        error,
+        "Wallet connected, but ARC Testnet was not selected."
+      )
+    };
+  }
 }
 
 function getPublicClient() {
@@ -394,6 +514,32 @@ function getMessageData(input: {
   });
 }
 
+async function getMessageFeeDetails(
+  input: {
+    from: string;
+    text: string;
+    type: MessageType;
+    intensity: number;
+  },
+  mode: ContractMode
+) {
+  const { address } = getContract(mode);
+  const client = getPublicClient();
+  const data = getMessageData(input);
+  const [gasUnits, gasPrice, balanceWei] = await Promise.all([
+    client.estimateGas({
+      account: input.from as `0x${string}`,
+      to: address,
+      data
+    }),
+    client.getGasPrice(),
+    client.getBalance({ address: input.from as `0x${string}` })
+  ]);
+  const feeWei = gasUnits * gasPrice;
+
+  return { address, data, gasUnits, gasPrice, feeWei, balanceWei };
+}
+
 export async function estimateArcMessageFee(
   input: {
     from: string;
@@ -403,23 +549,18 @@ export async function estimateArcMessageFee(
   },
   mode: ContractMode
 ): Promise<ArcFeeEstimate> {
-  const { address } = getContract(mode);
-  const client = getPublicClient();
-  const data = getMessageData(input);
-  const [gasUnits, gasPrice] = await Promise.all([
-    client.estimateGas({
-      account: input.from as `0x${string}`,
-      to: address,
-      data
-    }),
-    client.getGasPrice()
-  ]);
-  const feeWei = gasUnits * gasPrice;
+  const { gasUnits, feeWei, balanceWei } = await getMessageFeeDetails(
+    input,
+    mode
+  );
 
   return {
     gasUnits,
     feeWei,
     formattedFee: formatUnits(feeWei, 18),
+    balanceWei,
+    formattedBalance: formatUnits(balanceWei, 18),
+    hasSufficientBalance: balanceWei >= feeWei,
     symbol: arcCurrencySymbol
   };
 }
@@ -437,19 +578,45 @@ export async function submitArcMessage(
     throw new Error("No browser wallet detected.");
   }
 
-  const { address } = getContract(mode);
-  await ensureArcChain();
+  try {
+    await ensureArcChain();
+  } catch (error) {
+    throw new Error(
+      friendlyProviderMessage(error, "Select ARC Testnet in your wallet.")
+    );
+  }
 
-  const hash = normalizeTransactionHash(await window.ethereum.request({
-    method: "eth_sendTransaction",
-    params: [
-      {
-        from: input.from,
-        to: address,
-        data: getMessageData(input)
-      }
-    ]
-  }));
+  const { address, data, gasUnits, gasPrice, feeWei, balanceWei } =
+    await getMessageFeeDetails(input, mode);
+
+  if (balanceWei < feeWei) {
+    throw new Error(
+      `This wallet has ${formatUnits(balanceWei, 18)} ${arcCurrencySymbol} on ARC Testnet, but the transaction needs approximately ${formatUnits(feeWei, 18)} ${arcCurrencySymbol}. Get ARC Testnet USDC from the Circle Faucet.`
+    );
+  }
+
+  let response: unknown;
+  try {
+    response = await window.ethereum.request({
+      method: "eth_sendTransaction",
+      params: [
+        {
+          from: input.from,
+          to: address,
+          data,
+          value: "0x0",
+          gas: toHex(gasUnits),
+          gasPrice: toHex(gasPrice)
+        }
+      ]
+    });
+  } catch (error) {
+    throw new Error(
+      friendlyProviderMessage(error, "The wallet could not submit the ARC transaction.")
+    );
+  }
+
+  const hash = normalizeTransactionHash(response);
 
   if (!hash) {
     throw new Error("The wallet did not return a valid transaction hash.");

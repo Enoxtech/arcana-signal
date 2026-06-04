@@ -7,14 +7,19 @@ import {
   interpretMessage
 } from "./stateEngine";
 import {
+  ARC_FAUCET_URL,
   connectArcWallet,
+  ensureArcChain,
   estimateArcMessageFee,
   fetchArcMessages,
+  getConnectedArcWallet,
   getChainModeLabel,
   getConfiguredContractModes,
   getContractModeLabel,
+  getProviderErrorMessage,
   hasContractConfig,
   hasEventReaderConfig,
+  isArcChainActive,
   normalizeWalletAddress,
   submitArcMessage,
   type ArcFeeEstimate
@@ -23,6 +28,7 @@ import type { ContractMode, IntentMessage, MessageType } from "./types";
 
 const STORAGE_KEY = "deararc:v2";
 const WALLET_KEY = "deararc:wallet";
+const DISCONNECT_KEY = "deararc:disconnected";
 const messageTypes: MessageType[] = ["wish", "goal", "question", "thought"];
 const messageTypeMeta: Record<MessageType, { label: string; note: string }> = {
   wish: { label: "Wish", note: "Desire" },
@@ -91,18 +97,10 @@ function createDemoAddress() {
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "object" &&
-          error &&
-          "message" in error &&
-          typeof error.message === "string"
-        ? error.message
-        : fallback;
+  const message = getProviderErrorMessage(error) ?? fallback;
 
   if (
-    /user rejected|user denied|request rejected|cancelled|canceled/i.test(
+    /user rejected|user denied|user refused|request rejected|cancelled|canceled/i.test(
       message
     )
   ) {
@@ -115,11 +113,11 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 export default function App() {
+  const devWallet = import.meta.env.DEV
+    ? new URLSearchParams(window.location.search).get("wallet")
+    : null;
   const [wallet, setWallet] = useState(
-    () =>
-      (import.meta.env.DEV
-        ? new URLSearchParams(window.location.search).get("wallet")
-        : null) ?? localStorage.getItem(WALLET_KEY)
+    () => devWallet ?? (hasContractConfig() ? null : localStorage.getItem(WALLET_KEY))
   );
   const [messages, setMessages] = useState<IntentMessage[]>(loadMessages);
   const [text, setText] = useState("");
@@ -141,6 +139,9 @@ export default function App() {
     Partial<Record<ContractMode, string>>
   >({});
   const [isEstimatingFees, setIsEstimatingFees] = useState(false);
+  const [isArcNetworkReady, setIsArcNetworkReady] = useState(false);
+  const [networkNotice, setNetworkNotice] = useState("");
+  const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
 
   const chainMode = getChainModeLabel();
   const configuredContractModes = getConfiguredContractModes();
@@ -156,6 +157,37 @@ export default function App() {
   }, [wallet]);
 
   useEffect(() => {
+    if (!hasContractConfig()) return;
+    if (devWallet) {
+      setIsArcNetworkReady(
+        new URLSearchParams(window.location.search).get("network") !== "wrong"
+      );
+      return;
+    }
+    if (localStorage.getItem(DISCONNECT_KEY) === "1") return;
+    let cancelled = false;
+
+    async function restoreWalletConnection() {
+      try {
+        const connection = await getConnectedArcWallet();
+        if (cancelled) return;
+        setWallet(connection?.account ?? null);
+        setIsArcNetworkReady(connection?.chainReady ?? false);
+      } catch {
+        if (!cancelled) {
+          setWallet(null);
+          setIsArcNetworkReady(false);
+        }
+      }
+    }
+
+    restoreWalletConnection();
+    return () => {
+      cancelled = true;
+    };
+  }, [devWallet]);
+
+  useEffect(() => {
     if (!window.ethereum?.on) return;
 
     const handleAccountsChanged = (...args: unknown[]) => {
@@ -164,14 +196,27 @@ export default function App() {
 
       if (!nextWallet) {
         localStorage.removeItem(WALLET_KEY);
+        setIsArcNetworkReady(false);
+        setNetworkNotice("");
         setView("write");
+      } else {
+        void isArcChainActive().then(setIsArcNetworkReady);
       }
     };
 
+    const handleChainChanged = () => {
+      void isArcChainActive().then((ready) => {
+        setIsArcNetworkReady(ready);
+        if (ready) setNetworkNotice("");
+      });
+    };
+
     window.ethereum.on("accountsChanged", handleAccountsChanged);
+    window.ethereum.on("chainChanged", handleChainChanged);
 
     return () => {
       window.ethereum?.removeListener?.("accountsChanged", handleAccountsChanged);
+      window.ethereum?.removeListener?.("chainChanged", handleChainChanged);
     };
   }, []);
 
@@ -241,7 +286,11 @@ export default function App() {
     setSubmitError("");
 
     try {
-      setWallet(await connectArcWallet());
+      const connection = await connectArcWallet();
+      localStorage.removeItem(DISCONNECT_KEY);
+      setWallet(connection.account);
+      setIsArcNetworkReady(connection.chainReady);
+      setNetworkNotice(connection.warning ?? "");
     } catch (error) {
       setSubmitError(
         getErrorMessage(error, "The wallet could not be connected.")
@@ -249,9 +298,30 @@ export default function App() {
     }
   }
 
+  async function switchToArc() {
+    if (isSwitchingNetwork) return;
+    setIsSwitchingNetwork(true);
+    setSubmitError("");
+    setNetworkNotice("");
+    try {
+      await ensureArcChain();
+      setIsArcNetworkReady(true);
+    } catch (error) {
+      setIsArcNetworkReady(false);
+      setNetworkNotice(
+        getErrorMessage(error, "Select ARC Testnet in your wallet to continue.")
+      );
+    } finally {
+      setIsSwitchingNetwork(false);
+    }
+  }
+
   function disconnectWallet() {
     setWallet(null);
+    setIsArcNetworkReady(false);
+    setNetworkNotice("");
     localStorage.removeItem(WALLET_KEY);
+    localStorage.setItem(DISCONNECT_KEY, "1");
     setView("write");
   }
 
@@ -443,10 +513,22 @@ export default function App() {
           )}
           <div className="mode-pill">
             <span />
-            {isSyncingHistory ? "Syncing ARC events" : chainMode}
+            {wallet && !isArcNetworkReady
+              ? "ARC Testnet not selected"
+              : isSyncingHistory
+                ? "Syncing ARC events"
+                : chainMode}
           </div>
         </div>
         {syncError && <p className="sync-error">{syncError}</p>}
+        {wallet && !isArcNetworkReady && (
+          <div className="network-notice">
+            <span>{networkNotice || "Switch your wallet to ARC Testnet."}</span>
+            <button type="button" onClick={switchToArc} disabled={isSwitchingNetwork}>
+              {isSwitchingNetwork ? "Switching..." : "Switch to ARC"}
+            </button>
+          </div>
+        )}
       </section>
 
       {view === "write" && (
@@ -457,6 +539,7 @@ export default function App() {
           isSubmitting={isSubmitting}
           hasWallet={Boolean(wallet)}
           requiresWallet={hasContractConfig()}
+          networkReady={!hasContractConfig() || isArcNetworkReady}
           onConnect={connectWallet}
           onText={setText}
           onType={setType}
@@ -518,6 +601,7 @@ interface WritePanelProps {
   isSubmitting: boolean;
   hasWallet: boolean;
   requiresWallet: boolean;
+  networkReady: boolean;
   onConnect: () => void;
   onText: (value: string) => void;
   onType: (type: MessageType) => void;
@@ -580,13 +664,13 @@ function WritePanel(props: WritePanelProps) {
           disabled={
             !props.text.trim() ||
             props.isSubmitting ||
-            (props.requiresWallet && !props.hasWallet)
+            (props.requiresWallet && (!props.hasWallet || !props.networkReady))
           }
         >
           {props.isSubmitting ? "Confirming on ARC..." : "Encode state"}
         </button>
       </div>
-      {props.submitError && <p className="submit-error">{props.submitError}</p>}
+      <ErrorNotice message={props.submitError} />
     </form>
   );
 }
@@ -864,6 +948,12 @@ function ContractChoiceDialog({
                 {estimateError && (
                   <span className="fee-error">{estimateError}</span>
                 )}
+                {estimate && !estimate.hasSufficientBalance && (
+                  <span className="fee-error">
+                    Balance: {formatBalance(estimate)}. Fund this wallet with ARC
+                    Testnet USDC before continuing.
+                  </span>
+                )}
               </button>
             );
           })}
@@ -873,7 +963,19 @@ function ContractChoiceDialog({
           Both choices remain onchain and appear in your Arcana Signal history.
           Your wallet shows the final fee before approval.
         </p>
-        {submitError && <p className="submit-error">{submitError}</p>}
+        {modes.some(
+          (mode) => estimates[mode] && !estimates[mode]?.hasSufficientBalance
+        ) && (
+          <a
+            className="fee-faucet-link"
+            href={ARC_FAUCET_URL}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Get ARC Testnet USDC from Circle Faucet
+          </a>
+        )}
+        <ErrorNotice message={submitError} />
         <div className="action-row dialog-actions">
           <button
             className="ghost-button"
@@ -887,7 +989,12 @@ function ContractChoiceDialog({
             className="primary-button"
             type="button"
             onClick={onConfirm}
-            disabled={isSubmitting || isEstimating || !estimates[selectedMode]}
+            disabled={
+              isSubmitting ||
+              isEstimating ||
+              !estimates[selectedMode] ||
+              !estimates[selectedMode]?.hasSufficientBalance
+            }
           >
             {isSubmitting
               ? "Confirming on ARC..."
@@ -895,6 +1002,21 @@ function ContractChoiceDialog({
           </button>
         </div>
       </section>
+    </div>
+  );
+}
+
+function ErrorNotice({ message }: { message: string }) {
+  if (!message) return null;
+  const showFaucet = /ARC Testnet USDC|gas asset|network fee/i.test(message);
+  return (
+    <div className="submit-error">
+      <span>{message}</span>
+      {showFaucet && (
+        <a href={ARC_FAUCET_URL} target="_blank" rel="noreferrer">
+          Open Circle Faucet
+        </a>
+      )}
     </div>
   );
 }
@@ -924,5 +1046,13 @@ function formatFeeEstimate(estimate: ArcFeeEstimate) {
         maximumFractionDigits: 6
       })
     : estimate.formattedFee;
+  return `${formatted} ${estimate.symbol}`;
+}
+
+function formatBalance(estimate: ArcFeeEstimate) {
+  const value = Number(estimate.formattedBalance);
+  const formatted = Number.isFinite(value)
+    ? value.toLocaleString(undefined, { maximumFractionDigits: 6 })
+    : estimate.formattedBalance;
   return `${formatted} ${estimate.symbol}`;
 }

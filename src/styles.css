@@ -365,6 +365,34 @@ h1 {
   font-weight: 700;
 }
 
+.network-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 680px;
+  margin: 14px auto 0;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid rgba(255, 204, 122, 0.28);
+  border-radius: 14px;
+  color: var(--amber);
+  background: rgba(255, 204, 122, 0.07);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.network-notice button {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 204, 122, 0.34);
+  border-radius: 8px;
+  color: #170b23;
+  background: var(--amber);
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .message-panel,
 .state-card,
 .reflection-card,
@@ -493,10 +521,19 @@ input[type="range"] {
 }
 
 .submit-error {
+  display: grid;
+  gap: 8px;
   margin: 16px 0 0;
   color: #ffcc7a;
   font-weight: 700;
   line-height: 1.45;
+}
+
+.submit-error a {
+  width: fit-content;
+  color: var(--mint);
+  font-size: 13px;
+  font-weight: 900;
 }
 
 .primary-button,
@@ -1023,6 +1060,15 @@ code {
   line-height: 1.5;
 }
 
+.fee-faucet-link {
+  display: block;
+  width: fit-content;
+  margin-top: 10px;
+  color: var(--mint);
+  font-size: 13px;
+  font-weight: 900;
+}
+
 .dialog-actions {
   margin-top: 20px;
 }
@@ -1087,6 +1133,11 @@ code {
 
   .hero {
     margin-top: 54px;
+  }
+
+  .network-notice {
+    display: grid;
+    width: 100%;
   }
 
   .result-layout,
