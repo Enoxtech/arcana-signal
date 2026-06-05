@@ -109,160 +109,194 @@ export function deriveStateVector(message: IntentMessage): StateVector {
 
 export function interpretMessage(message: IntentMessage): StateReport {
   const vector = deriveStateVector(message);
-  const text = reflectionMap[message.type][vector.intent][vector.execution];
-  const toneLine =
-    vector.tone === "Charged"
-      ? "The emotional field is amplified, so the signal needs structure before scale."
-      : vector.tone === "Calm"
-        ? "The tone is steady enough to convert the message into a practical rhythm."
-        : "The tone is balanced, which makes the next move easier to observe.";
+  const subject = subjectFor(message);
 
   return {
     vector,
-    reflection: `${text} ${toneLine}`,
-    nextSignal: nextSignalFor(message.type, vector)
+    reflection: reflectionFor(message, vector, subject),
+    nextSignal: nextSignalFor(message, vector, subject)
   };
 }
 
-const reflectionMap: Record<
-  MessageType,
-  Record<StateLevel, Record<ExecutionLevel, string>>
-> = {
-  wish: {
-    Unclear: {
-      Passive:
-        "This wish is still atmospheric; it carries desire but not yet a defined edge.",
-      "Moderate pressure":
-        "The wish is forming a direction, but the pressure is ahead of the plan.",
-      Urgent:
-        "The wish is charged and close to becoming a demand; clarity should come first."
-    },
-    Focused: {
-      Passive:
-        "The wish has a center, but it is asking for a small action to make it real.",
-      "Moderate pressure":
-        "The wish is emotionally present and clear enough to become a near-term move.",
-      Urgent:
-        "The wish is focused and intense; grounding it will keep the signal useful."
-    },
-    Precise: {
-      Passive:
-        "The wish is precise, but the execution field is quiet and needs a first step.",
-      "Moderate pressure":
-        "The wish has shape and timing; consistent action matters more than force.",
-      Urgent:
-        "The wish is highly defined and highly charged; reduce it to one immediate move."
-    }
-  },
-  goal: {
-    Unclear: {
-      Passive:
-        "The goal is named, but its path is under-specified and will drift without a constraint.",
-      "Moderate pressure":
-        "The goal has momentum, but the target needs sharper boundaries.",
-      Urgent:
-        "The goal is moving with pressure before the structure is ready."
-    },
-    Focused: {
-      Passive:
-        "The goal is readable, but the execution field is still waiting for commitment.",
-      "Moderate pressure":
-        "The goal is clear, and progress depends on consistent action rather than intensity.",
-      Urgent:
-        "The goal is focused and urgent; protect it from expanding into too many tasks."
-    },
-    Precise: {
-      Passive:
-        "The goal is precise, but it needs a near-term checkpoint to gain traction.",
-      "Moderate pressure":
-        "The goal is structurally strong and ready for sequenced execution.",
-      Urgent:
-        "The goal is exact and under pressure; execution should become narrow and time-boxed."
-    }
-  },
-  question: {
-    Unclear: {
-      Passive:
-        "The question is open-ended and reflective; its value is in narrowing the uncertainty.",
-      "Moderate pressure":
-        "The question is carrying pressure without a defined decision frame.",
-      Urgent:
-        "The question is urgent but not yet sharp enough to produce a useful signal."
-    },
-    Focused: {
-      Passive:
-        "The question has a clear center and can be tested through observation.",
-      "Moderate pressure":
-        "The question is focused; the next value comes from separating facts from assumptions.",
-      Urgent:
-        "The question is focused but urgent, so it needs a boundary before an answer."
-    },
-    Precise: {
-      Passive:
-        "The question is precise and calm enough to become a small experiment.",
-      "Moderate pressure":
-        "The question is exact and active; it is ready to become a decision check.",
-      Urgent:
-        "The question is precise and charged; slow the tempo before locking in an answer."
-    }
-  },
-  thought: {
-    Unclear: {
-      Passive:
-        "The thought is diffuse, carrying more atmosphere than direction.",
-      "Moderate pressure":
-        "The thought is forming, but the pressure suggests there is a hidden decision inside it.",
-      Urgent:
-        "The thought is charged and unstable; it should be observed before it is acted on."
-    },
-    Focused: {
-      Passive:
-        "The thought is centered and quiet, useful as a pattern marker.",
-      "Moderate pressure":
-        "The thought is focused and carries enough weight to become a note for future action.",
-      Urgent:
-        "The thought is focused but intense; it needs distance before interpretation."
-    },
-    Precise: {
-      Passive:
-        "The thought is precise and calm, making it valuable as an anchor in the wallet state.",
-      "Moderate pressure":
-        "The thought is precise and active; it points toward a behavioral pattern.",
-      Urgent:
-        "The thought is exact but over-pressurized; reduce interpretation until the tone settles."
-    }
-  }
+const fallbackSubject: Record<MessageType, string> = {
+  wish: "this wish",
+  goal: "this goal",
+  question: "this question",
+  thought: "this thought"
 };
 
-function nextSignalFor(type: MessageType, vector: StateVector) {
-  if (type === "goal") {
+const leadingPatterns: Record<MessageType, RegExp[]> = {
+  wish: [
+    /^(?:i\s+)?wish(?:ed)?(?:\s+for|\s+to)?\s+/i,
+    /^(?:i\s+)?hope(?:\s+for|\s+to)?\s+/i,
+    /^(?:i\s+)?want(?:\s+to|\s+for)?\s+/i,
+    /^(?:i\s+)?would\s+like(?:\s+to|\s+for)?\s+/i,
+    /^(?:i\s+)?need(?:\s+to|\s+for)?\s+/i,
+    /^(?:my\s+wish\s+is|my\s+dream\s+is)(?:\s+to|\s+for)?\s+/i
+  ],
+  goal: [
+    /^(?:my\s+goal\s+is|my\s+plan\s+is)(?:\s+to)?\s+/i,
+    /^(?:i\s+)?want\s+to\s+/i,
+    /^(?:i\s+)?will\s+/i,
+    /^(?:i\s+)?plan\s+to\s+/i,
+    /^(?:i\s+)?am\s+going\s+to\s+/i,
+    /^(?:i'm|i am)\s+going\s+to\s+/i,
+    /^(?:i\s+)?need\s+to\s+/i,
+    /^to\s+/i
+  ],
+  question: [],
+  thought: [
+    /^(?:i\s+)?keep\s+thinking\s+about\s+/i,
+    /^(?:i\s+)?am\s+thinking\s+about\s+/i,
+    /^(?:i'm)\s+thinking\s+about\s+/i,
+    /^(?:i\s+)?think\s+about\s+/i,
+    /^thinking\s+about\s+/i,
+    /^(?:i\s+)?feel\s+like\s+/i,
+    /^(?:i\s+)?noticed\s+that\s+/i
+  ]
+};
+
+const wishClarity: Record<StateLevel, string> = {
+  Unclear:
+    "It still needs a little more detail, so make it easier to name and picture.",
+  Focused:
+    "The direction is clear enough to turn into one small real-world step.",
+  Precise: "It is specific enough to become a plan instead of only a hope."
+};
+
+const goalClarity: Record<StateLevel, string> = {
+  Unclear: "The goal needs a clearer finish line before you push hard.",
+  Focused: "The direction is clear; now it needs consistency.",
+  Precise: "The goal is specific enough to track and measure."
+};
+
+const questionClarity: Record<StateLevel, string> = {
+  Unclear: "The useful move is to narrow it until one part can be answered.",
+  Focused: "You already have a clear center; separate facts from guesses.",
+  Precise: "It is specific enough to test with one decision or observation."
+};
+
+const thoughtClarity: Record<StateLevel, string> = {
+  Unclear:
+    "It may not need action yet; it may just be showing what is on your mind.",
+  Focused: "There is a clear theme here, so keep it as a pattern marker.",
+  Precise:
+    "It is specific enough to return to later and compare with your next messages."
+};
+
+const executionAdvice: Record<ExecutionLevel, string> = {
+  Passive: "Start small so it does not stay only as an idea.",
+  "Moderate pressure": "There is enough momentum here to take a practical step.",
+  Urgent: "Because it feels urgent, keep the next step narrow."
+};
+
+const wishToneAdvice: Record<ToneLevel, string> = {
+  Calm: "You can move with it steadily without forcing the outcome.",
+  Neutral: "A simple plan will make it easier to understand what comes next.",
+  Charged:
+    "Because the feeling is strong, turn it into a small plan instead of only holding the emotion."
+};
+
+const questionToneAdvice: Record<ToneLevel, string> = {
+  Calm: "You can think through it without pressure.",
+  Neutral: "Keep it practical and look for the first thing you can confirm.",
+  Charged: "If it feels heavy, slow it down before deciding."
+};
+
+const thoughtToneAdvice: Record<ToneLevel, string> = {
+  Calm: "You can observe it without rushing to act.",
+  Neutral: "Watch whether it becomes a wish, goal, or question.",
+  Charged: "Let it settle before turning it into a decision."
+};
+
+function subjectFor(message: IntentMessage) {
+  const cleaned = compactText(message.text).replace(/[.!?]+$/g, "").trim();
+  const withoutLead = leadingPatterns[message.type].reduce((value, pattern) => {
+    const next = value.replace(pattern, "");
+    return next === value ? value : next.trim();
+  }, cleaned);
+
+  return withoutLead.length >= 2 ? withoutLead : fallbackSubject[message.type];
+}
+
+function compactText(value: string, maxLength = 120) {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+
+  if (cleaned.length <= maxLength) {
+    return cleaned;
+  }
+
+  const clipped = cleaned.slice(0, maxLength).replace(/\s+\S*$/g, "").trim();
+  return `${clipped || cleaned.slice(0, maxLength)}...`;
+}
+
+function withSentenceEnding(value: string) {
+  const trimmed = value.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function reflectionFor(
+  message: IntentMessage,
+  vector: StateVector,
+  subject: string
+) {
+  if (message.type === "wish") {
+    const opening =
+      message.intensity >= 4
+        ? `That is good to hear. You are naming a strong wish: ${subject}. It makes sense that it feels important.`
+        : `That is good to hear. You are naming a real wish: ${subject}.`;
+
+    return `${opening} ${wishClarity[vector.intent]} ${wishToneAdvice[vector.tone]}`;
+  }
+
+  if (message.type === "goal") {
+    return `Good move putting this goal onchain: ${subject}. ${goalClarity[vector.intent]} ${executionAdvice[vector.execution]}`;
+  }
+
+  if (message.type === "question") {
+    const question = compactText(message.text, 120);
+    return `That is a fair question: ${withSentenceEnding(question)} ${questionClarity[vector.intent]} ${questionToneAdvice[vector.tone]}`;
+  }
+
+  return `That thought is worth noting: ${subject}. ${thoughtClarity[vector.intent]} ${thoughtToneAdvice[vector.tone]}`;
+}
+
+function nextSignalFor(
+  message: IntentMessage,
+  vector: StateVector,
+  subject: string
+) {
+  if (message.type === "goal") {
     if (vector.execution === "Urgent") {
-      return "Break this into one immediate step and one checkpoint before adding scope.";
+      return "Pick one next action, give it a deadline, and finish it before adding more tasks.";
     }
     if (vector.intent === "Precise") {
-      return "Set the next measurable action and commit it to a short time window.";
+      return "Set one clear checkpoint for this goal so you can see progress this week.";
     }
-    return "Define what completion means before pushing for speed.";
+    return "Write what success looks like, then choose the first task that moves this goal forward.";
   }
 
-  if (type === "wish") {
-    if (vector.tone === "Charged") {
-      return "Name the smallest behavior that would make this wish visible in the next day.";
-    }
-    return "Convert the wish into one grounded request or one first action.";
-  }
-
-  if (type === "question") {
+  if (message.type === "wish") {
     if (vector.intent === "Unclear") {
-      return "Rewrite the question until it can be answered by one observation or decision.";
+      return "Add one clear detail to this wish: what would make it feel real to you?";
     }
-    return "Separate the unknowns from the assumptions before seeking an answer.";
+    if (vector.tone === "Charged" || vector.execution === "Urgent") {
+      return "Choose one small action you can take in the next 24 hours that supports this wish.";
+    }
+    return "Write one simple step that can move this wish closer to real life this week.";
+  }
+
+  if (message.type === "question") {
+    if (vector.intent === "Unclear") {
+      return "Rewrite the question in one simple sentence, then list what you already know.";
+    }
+    return "Write what you know, what you are unsure about, and the first thing to confirm.";
   }
 
   if (vector.tone === "Charged") {
-    return "Let the thought cool, then decide whether it is a note, a question, or a goal.";
+    return "Let the thought settle, then decide if it should become a wish, goal, or question.";
   }
-  return "Keep this as a pattern marker and compare it with the next message.";
+  return "Keep this note, then check later whether it keeps showing up in your messages.";
 }
 
 export function buildWalletProfile(messages: IntentMessage[]): WalletProfile {
